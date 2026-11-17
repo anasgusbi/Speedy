@@ -1,4 +1,4 @@
-[Uploading README.md…]()# سبيدي — حضور وانصراف المندوبين
+[README.md](https://github.com/user-attachments/files/34961968/README.md)# سبيدي — حضور وانصراف المندوبين
 
 تطبيق للمشرف يعمل على الهاتف والكمبيوتر من رابط واحد. البيانات محفوظة على Firebase ومتزامنة لحظياً بين الأجهزة، ويستمر العمل بدون إنترنت ثم ترفع التسجيلات تلقائياً عند عودة الاتصال.
 
@@ -19,7 +19,7 @@
 2. **Build ← Authentication ← Get started ← Sign-in method ← Email/Password ← Enable ← Save**.
 3. في **Authentication ← Users ← Add user**: أنشئ حساب المشرف (بريد + كلمة مرور)، وحساباً لك إن أردت.
 4. **Build ← Firestore Database ← Create database** ← اختر موقعاً أوروبياً (مثل `eur3` أو `europe-west`) ← **Start in production mode** ← Create.
-5. في Firestore افتح تبويب **Rules**، الصق محتوى ملف `firestore.rules`، وضع فيه بريد المشرف وبريدك بحروف صغيرة بدل الأمثلة ← **Publish**.
+5. في Firestore افتح تبويب **Rules**، الصق محتوى ملف `firestore.rules` ← **Publish**. (بريد صاحب المنصة مكتوب فيه وفي `js/firebase-config.js`؛ بقية المستخدمين يُضافون من داخل المنصة: الإعدادات ← المستخدمون والصلاحيات.)
 6. من ⚙️ **Project settings ← General ← Your apps** اضغط أيقونة الويب `</>` ← اكتب اسماً ← Register app. انسخ قيم `firebaseConfig` وضعها في الملف `js/firebase-config.js`.
 
 > الخطة المجانية (Spark) تكفي ولا تحتاج بطاقة دفع.
