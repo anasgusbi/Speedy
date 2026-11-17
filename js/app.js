@@ -1,8 +1,10 @@
 /* سبيدي — حضور وانصراف المندوبين (نسخة Firebase متزامنة) */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, deleteField, query, where, documentId, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { firebaseConfig } from './firebase-config.js';
+import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, setDoc, deleteDoc, deleteField, query, where, documentId, writeBatch, arrayUnion, arrayRemove } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import * as CONF from './firebase-config.js';
+const firebaseConfig=CONF.firebaseConfig;
+const OWNER=String(CONF.ownerEmail||'').trim().toLowerCase();
 
 /* ========== helpers ========== */
 const $=s=>document.querySelector(s);
@@ -50,6 +52,12 @@ const DEFAULTS={shifts:{m:{start:'10:00',end:'17:00'},e:{start:'17:00',end:'24:0
   points:{order:1,shift:5,onTime:2,weekOk:10,late:3,absent:15,early:3,weekMiss:10}};
 let D={drivers:{},att:{},orders:{},settings:{}};
 let user=null,unsubs=[],ready={},pending={},started=false,pendingRender=false;
+/* ========== roles: manager (full) / supervisor (attendance, orders, drivers) ========== */
+let ROLES={managers:[],supervisors:[]};
+const myEmail=()=>String((user&&user.email)||'').toLowerCase();
+function role(){const e=myEmail();if(!e)return 'none';if(e===OWNER||(ROLES.managers||[]).includes(e))return 'manager';if((ROLES.supervisors||[]).includes(e))return 'supervisor';return 'none'}
+const isMgr=()=>role()==='manager';
+const ROLE_LBL={manager:'مدير',supervisor:'مشرف',none:'—'};
 const cfg=()=>({...DEFAULTS,...D.settings,shifts:{m:{...DEFAULTS.shifts.m,...((D.settings.shifts||{}).m||{})},e:{...DEFAULTS.shifts.e,...((D.settings.shifts||{}).e||{})}},points:{...DEFAULTS.points,...(D.settings.points||{})}});
 const stamp=()=>({updatedBy:(user&&user.email)||'',updatedAt:Date.now()});
 const dayRef=ds=>doc(db,'days',ds);
@@ -149,7 +157,9 @@ const ICONS={
 };
 const VIEWS=[['att','الحضور والانصراف'],['orders','طلبيات اليوم'],['month','التقرير الشهري'],['drivers','المندوبين'],['settings','الإعدادات']];
 const SHORT={att:'الحضور',orders:'الطلبيات',month:'الشهري',drivers:'المندوبين',settings:'الإعدادات'};
-const navHTML=s=>VIEWS.map(([k,t])=>`<button class="nav ${S.view===k?'on':''}" data-view="${k}"><svg viewBox="0 0 24 24" fill="currentColor">${ICONS[k]}</svg><span>${s?SHORT[k]:t}</span></button>`).join('');
+const allowedViews=()=>isMgr()?VIEWS.map(v=>v[0]):['att','orders','drivers','settings'];
+const viewTitle=k=>k==='settings'&&!isMgr()?'الحساب':VIEWS.find(v=>v[0]===k)[1];
+const navHTML=s=>VIEWS.filter(v=>allowedViews().includes(v[0])).map(([k,t])=>`<button class="nav ${S.view===k?'on':''}" data-view="${k}"><svg viewBox="0 0 24 24" fill="currentColor">${ICONS[k]}</svg><span>${k==='settings'&&!isMgr()?'الحساب':(s?SHORT[k]:t)}</span></button>`).join('');
 function tick(){const d=new Date();const c=$('#clock');if(c)c.textContent=`${pad(d.getHours())}:${pad(d.getMinutes())}`}
 
 function scheduleRender(){
@@ -159,8 +169,10 @@ function scheduleRender(){
 }
 function render(){
   if(!started)return;
+  if(!allowedViews().includes(S.view))S.view='att';
   $('#sideNav').innerHTML=navHTML(false);$('#botNav').innerHTML=navHTML(true);
-  $('#title').textContent=VIEWS.find(v=>v[0]===S.view)[1];$('#subtitle').textContent=dayLabel(todayStr());
+  $('#title').textContent=viewTitle(S.view);
+  const w=$('#who');if(w)w.innerHTML=`${esc(myEmail())}<br><span class="chip ${isMgr()?'c-y':'c-g'}">${ROLE_LBL[role()]}</span>`;$('#subtitle').textContent=dayLabel(todayStr());
   const focusQ=document.activeElement&&document.activeElement.id==='q';
   $('#view').innerHTML=({att:vAtt,orders:vOrders,month:vMonth,drivers:vDrivers,settings:vSettings}[S.view])();
   if(focusQ){const q=$('#q');if(q){q.focus();q.setSelectionRange(q.value.length,q.value.length)}}
@@ -202,7 +214,8 @@ function vAtt(){
   }).join('');
   const missing=drv.filter(d=>(d.shift===shift||d.shift==='both')&&!getRec(date,shift,d.id)).length;
   return dateBar(`<div class="seg"><button class="${shift==='m'?'on':''}" data-act="shift" data-s="m">الصباحية</button><button class="${shift==='e'?'on':''}" data-act="shift" data-s="e">المسائية</button></div>
-    <input class="inp grow" id="q" placeholder="بحث بالاسم أو الرقم…" value="${esc(S.q)}" style="min-width:160px">`)+
+    <input class="inp grow" id="q" placeholder="بحث بالاسم أو الرقم…" value="${esc(S.q)}" style="min-width:160px"><button class="btn sm" data-act="summary">📤 ملخص اليوم</button>`)+
+  alertsHTML()+
   `<div class="grid k4" style="margin-bottom:12px">
     <div class="card kpi g"><div class="l">في الدوام الآن</div><div class="v">${inNow}</div></div>
     <div class="card kpi b"><div class="l">حاضرين</div><div class="v">${cnt('present')}</div></div>
@@ -233,6 +246,66 @@ function editRec(id){
   openModal();
 }
 
+/* ========== alerts: incomplete records in the last 7 days ========== */
+function alerts(){
+  const now=Date.now(),td=todayStr(),out=[],H=3600000;
+  for(let i=0;i<=7;i++){const ds=addDays(td,-i);
+    ['m','e'].forEach(sh=>{const b=bounds(ds,sh);if(now<b.end+H)return;
+      recs().filter(r=>r.date===ds&&r.shift===sh&&r.status==='present'&&!r.checkOut&&D.drivers[r.driverId]).forEach(r=>
+        out.push({k:'out',t:`${D.drivers[r.driverId].name}: لم يُسجَّل خروجه — ${dayLabel(ds)} · ${SH[sh]}`,id:r.id}));
+      const miss=activeDrivers().filter(d=>(d.shift===sh||d.shift==='both')&&(!d.createdAt||d.createdAt<=ds)&&!getRec(ds,sh,d.id));
+      if(miss.length)out.push({k:'att',t:`${dayLabel(ds)} · ${SH[sh]}: ${miss.length} مندوب بدون تسجيل (${miss.slice(0,3).map(d=>d.name).join('، ')}${miss.length>3?'…':''})`,ds,sh});
+    });
+    if(ds<td||now>bounds(ds,'e').end+H){
+      const worked=Object.values(D.drivers).filter(d=>['m','e'].some(sh=>{const r=getRec(ds,sh,d.id);return r&&r.status==='present'}));
+      const noOrd=worked.filter(d=>ordersOf(ds,d.id)==null||ordersOf(ds,d.id)==='');
+      if(noOrd.length)out.push({k:'ord',t:`${dayLabel(ds)}: لم تُدخَل طلبيات ${noOrd.length} من ${worked.length} مندوب`,ds});
+    }
+  }
+  const pr={out:0,ord:1,att:2};
+  return out.map((x,i)=>[x,i]).sort((p,q)=>pr[p[0].k]-pr[q[0].k]||p[1]-q[1]).map(p=>p[0]);
+}
+function alertsHTML(){
+  const A=alerts();if(!A.length)return '';
+  const show=S.allAlerts?A:A.slice(0,5);
+  const ic={out:'⏱️',att:'👤',ord:'📦'};
+  return `<div class="card" style="margin-bottom:12px;border-color:rgba(245,165,36,.45);background:rgba(245,165,36,.06)">
+  <div class="sec" style="margin:0 0 6px;color:var(--amb)">⚠️ تسجيلات تحتاج مراجعة (${A.length})<span class="mu" style="font-weight:600">آخر 7 أيام</span></div>
+  ${show.map(a=>`<button class="alrt" data-act="alert" data-k="${a.k}" data-id="${esc(a.id||'')}" data-ds="${esc(a.ds||'')}" data-sh="${esc(a.sh||'')}"><span>${ic[a.k]}</span><span class="grow">${esc(a.t)}</span><span class="mu">‹</span></button>`).join('')}
+  ${A.length>5?`<button class="btn sm" style="margin-top:6px" data-act="allAlerts">${S.allAlerts?'إخفاء':'عرض الكل (+'+(A.length-5)+')'}</button>`:''}</div>`;
+}
+
+/* ========== daily summary (WhatsApp) ========== */
+function summaryText(ds){
+  const lines=[`📋 ملخص يوم ${dayLabel(ds)} — سبيدي`,''];
+  const late=[],abs=[],lv=[];
+  ['m','e'].forEach(sh=>{
+    const R=recs().filter(r=>r.date===ds&&r.shift===sh&&D.drivers[r.driverId]);if(!R.length)return;
+    const P=R.filter(r=>r.status==='present'),L=P.filter(isLate);
+    lines.push(`${sh==='m'?'🌅':'🌙'} الفترة ${SH[sh]}: حاضر ${P.length} | متأخر ${L.length} | غياب ${R.filter(r=>r.status==='absent').length} | إجازة ${R.filter(r=>r.status==='leave').length}`);
+    L.forEach(r=>late.push(`${D.drivers[r.driverId].name} (${dur(r.lateMin)}${sh==='e'?' مسائي':''})`));
+    R.filter(r=>r.status==='absent').forEach(r=>abs.push(D.drivers[r.driverId].name));
+    R.filter(r=>r.status==='leave').forEach(r=>lv.push(D.drivers[r.driverId].name+(r.note?` — ${r.note}`:'')));
+  });
+  if(lines.length===2)lines.push('لا توجد تسجيلات حضور لهذا اليوم.');
+  const O=Object.entries(D.orders[ds]||{}).filter(([id,v])=>D.drivers[id]&&v!==''&&v!=null);
+  if(O.length){const tot=O.reduce((a,[,v])=>a+num(v),0);const top=O.sort((a,b)=>num(b[1])-num(a[1]))[0];
+    lines.push('',`📦 مجموع الطلبيات المكتملة: ${tot} (${O.length} مندوب)`,`🏆 الأعلى طلبيات: ${D.drivers[top[0]].name} (${top[1]})`)}
+  if(late.length)lines.push('',`⏰ المتأخرون: ${late.join('، ')}`);
+  if(abs.length)lines.push(`❌ الغياب: ${abs.join('، ')}`);
+  if(lv.length)lines.push(`🟦 الإجازات: ${lv.join('، ')}`);
+  lines.push('','سبيدي.. طلبيتك في إيدي');
+  return lines.join('\n');
+}
+function showSummary(){
+  const t=summaryText(S.date);
+  $('#sheet').innerHTML=`<h3>ملخص اليوم</h3><div class="mu">${dayLabel(S.date)} — جاهز للإرسال على الواتساب</div>
+  <textarea class="inp" id="sumTxt" readonly style="width:100%;height:280px;margin-top:12px;line-height:1.8;resize:vertical">${esc(t)}</textarea>
+  <div class="mfoot"><button class="btn p" data-act="sumCopy">نسخ النص</button><button class="btn" data-act="sumWa" style="background:#25D366;border-color:#25D366;color:#fff">إرسال واتساب</button>${navigator.share?'<button class="btn" data-act="sumShare">مشاركة</button>':''}<button class="btn" data-act="close" style="margin-inline-start:auto">إغلاق</button></div>`;
+  openModal();
+}
+async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const x=$('#sumTxt');if(x){x.select();try{return document.execCommand('copy')}catch(_){}}return false}}
+
 /* ========== daily orders ========== */
 function vOrders(){
   const drv=activeDrivers();if(!drv.length)return emptyDrivers();
@@ -243,7 +316,7 @@ function vOrders(){
   const total=list.reduce((a,d)=>a+num(ordersOf(ds,d.id)),0);
   const filled=list.filter(d=>ordersOf(ds,d.id)!=null&&ordersOf(ds,d.id)!=='').length;
   const shifts=d=>['m','e'].filter(sh=>{const r=getRec(ds,sh,d.id);return r&&r.status==='present'}).map(sh=>SH[sh]).join(' + ');
-  return dateBar()+`<div class="grid k4" style="margin-bottom:12px">
+  return dateBar('<button class="btn sm" data-act="summary">📤 ملخص اليوم</button>')+`<div class="grid k4" style="margin-bottom:12px">
     <div class="card kpi b"><div class="l">مندوبين اشتغلوا</div><div class="v">${worked.length}</div></div>
     <div class="card kpi y"><div class="l">مجموع الطلبيات المكتملة</div><div class="v" id="ordTotal">${total}</div></div>
     <div class="card kpi ${filled<list.length?'a':'g'}"><div class="l">تم إدخالهم</div><div class="v" id="ordFilled">${filled}/${list.length}</div></div>
@@ -261,7 +334,7 @@ function vMonth(){
   const T=k=>rows.reduce((a,r)=>a+r[k],0);
   const medals=['🥇','🥈','🥉'];const top=rows.filter(r=>r.pts.total>0).slice(0,3);
   return `<div class="tools noprint"><select class="inp" id="monthPick">${monthOpts(S.month)}</select>
-    <button class="btn p" data-act="csv">تنزيل Excel</button><button class="btn" data-act="print">طباعة</button><span class="mu">اضغط على أي مندوب لعرض تفاصيله يوم بيوم</span></div>
+    <button class="btn p" data-act="pdf">📄 تقرير PDF</button><button class="btn" data-act="csv">تنزيل Excel</button><span class="mu">اضغط على أي مندوب لعرض تفاصيله يوم بيوم</span></div>
   <h2 class="printonly">تقرير المندوبين — ${monthLabel(S.month)} — سبيدي</h2>
   <div class="grid k4" style="margin-bottom:12px">
     <div class="card kpi b"><div class="l">أيام حضور (مجموع)</div><div class="v">${T('days')}</div></div>
@@ -277,6 +350,37 @@ function vMonth(){
   <td>${r.days}</td><td>${r.shifts}</td><td>${r.absent?`<b style="color:var(--red)">${r.absent}</b>`:0}</td><td>${r.leave}</td><td>${r.late?`<b style="color:var(--amb)">${r.late}</b>`:0}</td><td>${r.lateMin?dur(r.lateMin):'—'}</td><td>${r.hours.toFixed(1)}</td><td><b style="color:var(--gd)">${r.orders}</b></td><td>${r.avg.toFixed(1)}</td></tr>`).join('')}
   </tbody></table></div>
   <div class="mu" style="margin-top:8px;font-size:12px">الترتيب حسب مجموع النقاط. ${(P=>`كسب: طلبية +${P.order} · فترة حضور +${P.shift} · دخول في الوقت +${P.onTime} · أسبوع مكتمل +${P.weekOk} — خصم: تأخير −${P.late} · غياب بدون عذر −${P.absent} · خروج مبكر −${P.early} · أسبوع ناقص −${P.weekMiss}`)(cfg().points)}. التأخير والخروج المبكر بعد سماحية ${cfg().grace} دقائق. الأسابيع (السبت–الجمعة) تُحسب بعد انتهائها، وفترات الإجازة/العذر تُحتسب ضمن الحد الأسبوعي.</div>`;
+}
+/* ========== branded monthly report (print / save as PDF) ========== */
+function reportHTML(m){
+  const rows=monthStats(m),T=k=>rows.reduce((a,r)=>a+r[k],0),P=cfg().points,c=cfg();
+  const top=rows.filter(r=>r.pts.total>0).slice(0,3),medals=['🥇','🥈','🥉'];
+  const now=new Date();
+  return `<div class="rp">
+  <div class="rp-head"><img src="icons/icon-192.png" alt=""><div class="rp-co"><b>شركة سبيدي للتوصيل السريع</b><span>SPEEDY EXPRESS DELIVERY</span></div>
+    <div class="rp-meta"><b>تقرير أداء المندوبين</b><span>${monthLabel(m)}</span></div></div>
+  <div class="rp-kpis">
+    <div><span>عدد المندوبين</span><b>${rows.length}</b></div><div><span>أيام الحضور</span><b>${T('days')}</b></div>
+    <div><span>الغياب</span><b>${T('absent')}</b></div><div><span>مرات التأخير</span><b>${T('late')}</b></div>
+    <div><span>ساعات العمل</span><b>${Math.round(T('hours'))}</b></div><div><span>الطلبيات المكتملة</span><b>${T('orders')}</b></div></div>
+  ${top.length?`<div class="rp-sec">أفضل المندوبين</div><div class="rp-pod">${top.map((r,i)=>`<div><span class="md">${medals[i]}</span><b>${esc(r.d.name)}</b><span>${r.pts.total} نقطة · ${r.orders} طلبية · ${r.days} يوم</span></div>`).join('')}</div>`:''}
+  <div class="rp-sec">الترتيب التفصيلي</div>
+  <table class="rp-t"><thead><tr><th>#</th><th>المندوب</th><th>الرقم</th><th>النقاط</th><th>أيام</th><th>فترات</th><th>غياب</th><th>إجازة</th><th>تأخير</th><th>دقائق التأخير</th><th>خروج مبكر</th><th>ساعات</th><th>طلبيات</th><th>معدل/يوم</th></tr></thead><tbody>
+  ${rows.map((r,i)=>`<tr><td>${i+1}</td><td class="nm">${esc(r.d.name)}${r.d.active===false?' <small>(موقوف)</small>':''}</td><td>${esc(r.d.code||'')}</td><td class="pt ${r.pts.total<0?'neg':''}">${r.pts.total}</td><td>${r.days}</td><td>${r.shifts}</td><td>${r.absent}</td><td>${r.leave}</td><td>${r.late}</td><td>${r.lateMin}</td><td>${r.early}</td><td>${r.hours.toFixed(1)}</td><td>${r.orders}</td><td>${r.avg.toFixed(1)}</td></tr>`).join('')}
+  </tbody></table>
+  <div class="rp-note"><b>نظام النقاط:</b> طلبية +${P.order} · فترة حضور +${P.shift} · دخول في الوقت +${P.onTime} · أسبوع مكتمل +${P.weekOk} — تأخير −${P.late} · غياب بدون عذر −${P.absent} · خروج مبكر −${P.early} · أسبوع ناقص −${P.weekMiss}. السماحية ${c.grace} دقائق، والحد الأسبوعي ${c.minShifts} فترات (السبت–الجمعة).</div>
+  <div class="rp-sign"><div>المشرف<span></span></div><div>مدير العمليات<span></span></div><div>الاعتماد والختم<span></span></div></div>
+  <div class="rp-foot"><span>سبيدي.. طلبيتك في إيدي</span><span>طرابلس — شارع الظل، بجانب مصحة الرازي · 0916268800 · speedy.com.ly</span><span>صدر في ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}</span></div>
+  </div>`;
+}
+function printReport(){
+  const el=$('#printArea');el.innerHTML=reportHTML(S.month);
+  document.title=`تقرير المندوبين - ${monthLabel(S.month)} - سبيدي`;
+  document.body.classList.add('printing');
+  const done=()=>{document.body.classList.remove('printing');el.innerHTML='';document.title='سبيدي | حضور وانصراف المندوبين';removeEventListener('afterprint',done)};
+  addEventListener('afterprint',done);
+  const img=el.querySelector('img');const go=()=>setTimeout(()=>window.print(),50);
+  if(img&&!img.complete){img.onload=go;img.onerror=go}else go();
 }
 function detail(id){
   const d=D.drivers[id];const R=recs().filter(r=>r.driverId===id&&monthOf(r.date)===S.month).sort((a,b)=>a.date.localeCompare(b.date)||a.shift.localeCompare(b.shift));
@@ -316,7 +420,7 @@ function driverForm(d){
     <label>الهاتف<input class="inp" name="phone" dir="ltr" value="${esc(d.phone||'')}"></label>
     <label>الفترة المعتادة<select class="inp" name="shift"><option value="m" ${d.shift==='m'?'selected':''}>الصباحية</option><option value="e" ${d.shift==='e'?'selected':''}>المسائية</option><option value="both" ${d.shift==='both'?'selected':''}>الفترتين</option></select></label>
     <label class="full"><span class="row" style="gap:8px;color:var(--tx)"><input type="checkbox" name="active" ${d.active!==false?'checked':''} style="width:18px;height:18px;accent-color:var(--g)"> نشط (يظهر في الحضور)</span></label>
-  </div><div class="mfoot"><button class="btn p" type="submit">حفظ</button><button class="btn" type="button" data-act="close">إلغاء</button>${isNew?'':`<button class="btn d" type="button" data-act="delDriver" data-d="${d.id}" style="margin-inline-start:auto">حذف</button>`}</div></form>`;
+  </div><div class="mfoot"><button class="btn p" type="submit">حفظ</button><button class="btn" type="button" data-act="close">إلغاء</button>${isNew||!isMgr()?'':`<button class="btn d" type="button" data-act="delDriver" data-d="${d.id}" style="margin-inline-start:auto">حذف</button>`}</div></form>`;
   $('#drvForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);
     const active=!!f.get('active');
     const n={...d,name:String(f.get('name')).trim(),code:String(f.get('code')).trim(),phone:String(f.get('phone')).trim(),shift:f.get('shift'),active,...stamp()};
@@ -329,9 +433,27 @@ function driverForm(d){
 }
 
 /* ========== settings & backup ========== */
+function accountCard(){
+  return `<div class="card"><div class="sec">الحساب والمزامنة</div><div class="mu" style="line-height:1.9;margin-bottom:12px">البيانات محفوظة على السحابة (Firebase) ومتزامنة بين الهاتف والكمبيوتر. بدون إنترنت يستمر البرنامج بالعمل ويرفع التسجيلات عند عودة الاتصال.<br>الحساب الحالي: <b style="color:var(--tx)" dir="ltr">${esc(myEmail())}</b> · <span class="chip ${isMgr()?'c-y':'c-g'}">${ROLE_LBL[role()]}</span></div>
+    <div class="tools" style="margin:0"><button class="btn" data-act="logout">تسجيل الخروج</button><button class="btn" data-act="resetPw" data-e="${esc(myEmail())}">تغيير كلمة المرور</button></div></div>`;
+}
+function usersCard(){
+  const owner=OWNER?[{e:OWNER,r:'owner'}]:[];
+  const list=[...owner,...(ROLES.managers||[]).filter(e=>e!==OWNER).map(e=>({e,r:'manager'})),...(ROLES.supervisors||[]).filter(e=>e!==OWNER&&!(ROLES.managers||[]).includes(e)).map(e=>({e,r:'supervisor'}))];
+  const lbl={owner:['صاحب المنصة','c-y'],manager:['مدير','c-y'],supervisor:['مشرف','c-g']};
+  return `<div class="card"><div class="sec">المستخدمون والصلاحيات</div>
+  <div class="mu" style="line-height:1.8;margin-bottom:10px"><b style="color:var(--tx)">المدير:</b> كل الأقسام، التقارير، الإعدادات، حذف المندوبين وإدارة المستخدمين.<br><b style="color:var(--tx)">المشرف:</b> الحضور والانصراف، طلبيات اليوم، إضافة وتعديل المندوبين، ملخص اليوم.</div>
+  <table><tbody>${list.map(u=>`<tr><td dir="ltr" style="text-align:right">${esc(u.e)}</td><td><span class="chip ${lbl[u.r][1]}">${lbl[u.r][0]}</span></td><td style="text-align:left">${u.r==='owner'?'':`<button class="btn sm" data-act="roleSwap" data-e="${esc(u.e)}" data-r="${u.r==='manager'?'supervisors':'managers'}">${u.r==='manager'?'جعله مشرفاً':'جعله مديراً'}</button> <button class="btn sm d" data-act="userDel" data-e="${esc(u.e)}">إزالة</button>`}</td></tr>`).join('')}</tbody></table>
+  <form id="userForm" class="fg"><label>البريد الإلكتروني<input class="inp" type="email" name="email" dir="ltr" required></label>
+    <label>كلمة مرور مؤقتة (6 أحرف على الأقل)<input class="inp" type="text" name="pw" dir="ltr" minlength="6" placeholder="اتركها فارغة إن كان الحساب موجوداً"></label>
+    <label>الصلاحية<select class="inp" name="role"><option value="supervisors">مشرف</option><option value="managers">مدير</option></select></label>
+    <label style="justify-content:flex-end"><button class="btn p" type="submit">+ إضافة مستخدم</button></label></form>
+  <div class="mu" style="font-size:12px;margin-top:8px">أرسل للمستخدم الرابط والبريد وكلمة المرور المؤقتة، ويمكنه تغييرها من «الحساب». الإزالة تلغي صلاحية الوصول فوراً.</div></div>`;
+}
 function vSettings(){
+  if(!isMgr())return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:start">${accountCard()}</div>`;
   const c=cfg();
-  return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+  return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:start">
   <form class="card" id="setForm"><div class="sec">مواعيد الفترات</div><div class="fg" style="margin-top:0">
     <label>بداية الصباحية<input class="inp" type="time" name="ms" value="${c.shifts.m.start}"></label><label>نهاية الصباحية<input class="inp" type="time" name="me" value="${c.shifts.m.end}"></label>
     <label>بداية المسائية<input class="inp" type="time" name="es" value="${c.shifts.e.start}"></label><label>نهاية المسائية (يمكن بعد منتصف الليل)<input class="inp" type="time" name="ee" value="${c.shifts.e.end==='24:00'?'00:00':c.shifts.e.end}"></label>
@@ -352,8 +474,8 @@ function vSettings(){
   </div><div class="mu" style="font-size:12px;margin-top:8px">الإجازة والغياب بعذر لا يُخصم عليهم، وتُحتسب ضمن الحد الأسبوعي. تغيير القيم يعيد حساب نقاط كل الأشهر.</div>
   <div class="mfoot"><button class="btn p" type="submit">حفظ</button></div></form>
   <div class="grid" style="align-content:start">
-  <div class="card"><div class="sec">الحساب والمزامنة</div><div class="mu" style="line-height:1.9;margin-bottom:12px">البيانات محفوظة على السحابة (Firebase) ومتزامنة بين الهاتف والكمبيوتر. بدون إنترنت يستمر البرنامج بالعمل ويرفع التسجيلات عند عودة الاتصال.<br>الحساب الحالي: <b style="color:var(--tx)" dir="ltr">${esc(user&&user.email)}</b></div>
-    <button class="btn" data-act="logout">تسجيل الخروج</button></div>
+  ${usersCard()}
+  ${accountCard()}
   <div class="card"><div class="sec">النسخ الاحتياطي والاستيراد</div><div class="mu" style="margin-bottom:12px;line-height:1.9">• نسخة إضافية للاحتياط (ملف JSON) — اختيارية.<br>• <b style="color:var(--tx)">للانتقال من البرنامج القديم:</b> خذ نسخة احتياطية منه ثم استوردها هنا، وستُرفع كل البيانات للسحابة.<br>• الاستيراد يضيف البيانات ويحدّث الموجود ولا يحذف شيئاً.</div>
     <div class="tools"><button class="btn p" data-act="backup">تنزيل نسخة احتياطية</button><label class="btn" style="cursor:pointer">استيراد نسخة<input type="file" id="restoreFile" accept=".json,application/json" hidden></label></div></div>
   </div></div>`;
@@ -381,6 +503,27 @@ async function importData(x){
   }catch(e){console.error(e);toast('تعذر الاستيراد: '+(e.code||e.message))}
 }
 
+/* ========== user management (manager) ========== */
+let secAuth=null;
+function getSecAuth(){if(!secAuth){const a=initializeApp(firebaseConfig,'secondary');secAuth=initializeAuth(a,{persistence:inMemoryPersistence})}return secAuth}
+async function addUser(email,pw,r){
+  email=String(email||'').trim().toLowerCase();if(!email)return;
+  if(email===OWNER)return toast('هذا حساب صاحب المنصة');
+  let note='';
+  if(pw){try{const sa=getSecAuth();await createUserWithEmailAndPassword(sa,email,pw);await signOut(sa);note='تم إنشاء الحساب'}
+    catch(e){const c=e.code||'';
+      if(c.includes('email-already-in-use'))note='الحساب موجود مسبقاً';
+      else return toast(c.includes('weak-password')?'كلمة المرور ضعيفة (6 أحرف على الأقل)':c.includes('invalid-email')?'البريد غير صحيح':c.includes('network')?'إنشاء الحساب يحتاج إنترنت':'تعذر إنشاء الحساب: '+c)}}
+  const other=r==='managers'?'supervisors':'managers';
+  ROLES={...ROLES,[r]:[...new Set([...(ROLES[r]||[]),email])],[other]:(ROLES[other]||[]).filter(x=>x!==email)};render();
+  await W(setDoc(doc(db,'config','roles'),{[r]:arrayUnion(email),[other]:arrayRemove(email)},{merge:true}));
+  toast(`${note?note+' — ':''}أُضيف كـ${r==='managers'?'مدير':'مشرف'}`);
+}
+function removeUser(email){
+  ROLES={managers:(ROLES.managers||[]).filter(x=>x!==email),supervisors:(ROLES.supervisors||[]).filter(x=>x!==email)};render();
+  W(setDoc(doc(db,'config','roles'),{managers:arrayRemove(email),supervisors:arrayRemove(email)},{merge:true}));toast('أُزيلت الصلاحية');
+}
+
 /* ========== modal ========== */
 function openModal(){$('#modal').classList.remove('hidden')}
 function closeModal(){$('#modal').classList.add('hidden');$('#sheet').innerHTML=''}
@@ -393,6 +536,19 @@ document.addEventListener('click',e=>{
   if(e.target.id==='modal')return closeModal();
   const b=e.target.closest('[data-act]');if(!b)return;const a=b.dataset.act,id=b.dataset.d;
   if(a==='close')return closeModal();
+  if(a==='summary')return showSummary();
+  if(a==='sumCopy'){copyText($('#sumTxt').value).then(ok=>toast(ok?'تم نسخ الملخص ✓':'انسخ النص يدوياً'));return}
+  if(a==='sumWa'){window.open('https://wa.me/?text='+encodeURIComponent($('#sumTxt').value),'_blank');return}
+  if(a==='sumShare'){navigator.share({text:$('#sumTxt').value}).catch(()=>{});return}
+  if(a==='allAlerts'){S.allAlerts=!S.allAlerts;return render()}
+  if(a==='alert'){const k=b.dataset.k;
+    if(k==='out'){const r=D.att[b.dataset.id];if(r){S.date=r.date;S.shift=r.shift;S.view='att';render();editRec(r.id)}return}
+    if(k==='att'){S.date=b.dataset.ds;S.shift=b.dataset.sh;S.view='att';render();scrollTo(0,0);return}
+    if(k==='ord'){S.date=b.dataset.ds;S.view='orders';render();scrollTo(0,0);return}}
+  if(a==='pdf')return printReport();
+  if(a==='resetPw'){const e=b.dataset.e;return confirmBox(`إرسال رابط تغيير كلمة المرور إلى <b dir="ltr">${esc(e)}</b>؟`,()=>sendPasswordResetEmail(auth,e).then(()=>toast('أُرسل الرابط إلى البريد (تحقق من الرسائل غير المرغوبة)')).catch(err=>toast('تعذر الإرسال: '+(err.code||''))))}
+  if(a==='roleSwap'){if(!isMgr())return;const e=b.dataset.e;return addUser(e,'',b.dataset.r)}
+  if(a==='userDel'){if(!isMgr())return;const e=b.dataset.e;return confirmBox(`إزالة صلاحية <b dir="ltr">${esc(e)}</b>؟ لن يستطيع الدخول إلى البيانات.`,()=>removeUser(e))}
   if(a==='logout')return confirmBox('تسجيل الخروج من هذا الجهاز؟',()=>signOut(auth));
   if(a==='shift'){S.shift=b.dataset.s;return render()}
   if(a==='day'){S.date=addDays(S.date,+b.dataset.n);return render()}
@@ -412,8 +568,8 @@ document.addEventListener('click',e=>{
   if(a==='delRec')return confirmBox('حذف هذا التسجيل؟',()=>delRec(b.dataset.id));
   if(a==='newDriver')return driverForm();
   if(a==='editDriver')return driverForm(D.drivers[id]);
-  if(a==='delDriver'){const has=recs().some(r=>r.driverId===id);return confirmBox(has?'لهذا المندوب تسجيلات سابقة، والأفضل إيقافه (إلغاء علامة نشط) حتى تبقى التقارير صحيحة. حذفه نهائياً؟':'حذف المندوب نهائياً؟',()=>{delete D.drivers[id];render();W(deleteDoc(doc(db,'drivers',id)))})}
-  if(a==='detail')return detail(id);
+  if(a==='delDriver'){if(!isMgr())return;const has=recs().some(r=>r.driverId===id);return confirmBox(has?'لهذا المندوب تسجيلات سابقة، والأفضل إيقافه (إلغاء علامة نشط) حتى تبقى التقارير صحيحة. حذفه نهائياً؟':'حذف المندوب نهائياً؟',()=>{delete D.drivers[id];render();W(deleteDoc(doc(db,'drivers',id)))})}
+  if(a==='detail'){if(!isMgr())return;return detail(id)}
   if(a==='backup')return backup();
   if(a==='print')return window.print();
   if(a==='csv'){const rows=[['الترتيب','الرقم','المندوب','النقاط','نقاط مكتسبة','نقاط مخصومة','أيام الحضور','فترات','غياب','إجازة/عذر','مرات التأخير','مجموع التأخير (دقيقة)','ساعات العمل','الطلبيات المكتملة','معدل الطلبيات/يوم']];
@@ -436,10 +592,12 @@ document.addEventListener('change',e=>{
   if(e.target.classList.contains('ord')){setOrder(S.date,e.target.dataset.d,e.target.value);return}
   if(e.target.id==='datePick'&&e.target.value){S.date=e.target.value;render()}
   if(e.target.id==='monthPick'){S.month=e.target.value;render()}
-  if(e.target.id==='restoreFile'&&e.target.files[0]){restore(e.target.files[0]);e.target.value=''}
+  if(e.target.id==='restoreFile'&&e.target.files[0]&&isMgr()){restore(e.target.files[0]);e.target.value=''}
 });
 document.addEventListener('submit',e=>{
-  if(e.target.id==='setForm'){e.preventDefault();const f=new FormData(e.target);
+  if(e.target.id==='userForm'){e.preventDefault();if(!isMgr())return;const f=new FormData(e.target),btn=e.target.querySelector('button');btn.disabled=true;
+    addUser(f.get('email'),String(f.get('pw')||''),f.get('role')).finally(()=>{btn.disabled=false});return}
+  if(e.target.id==='setForm'){e.preventDefault();if(!isMgr())return toast('تغيير الإعدادات للمدير فقط');const f=new FormData(e.target);
     const s={shifts:{m:{start:f.get('ms'),end:f.get('me')},e:{start:f.get('es'),end:f.get('ee')==='00:00'?'24:00':f.get('ee')}},grace:Math.max(0,num(f.get('grace'))),minShifts:Math.max(0,num(f.get('minShifts'))),
       points:Object.fromEntries(Object.keys(DEFAULTS.points).map(k=>[k,Math.max(0,num(f.get('p_'+k)))]))};
     if(toMin(s.shifts.m.end)<=toMin(s.shifts.m.start))return toast('نهاية الصباحية يجب أن تكون بعد بدايتها');
@@ -464,7 +622,7 @@ function startApp(){
   gate.classList.add('hidden');$('#app').classList.remove('hidden');$('#botNav').classList.remove('hidden');
   $('#who').textContent=user.email||'';render();
 }
-function changed(){updateSync();if(!started){if(ready.drivers&&ready.days&&ready.settings)startApp();return}scheduleRender()}
+function changed(){updateSync();if(!started){if(ready.drivers&&ready.days&&ready.settings&&ready.roles)startApp();return}scheduleRender()}
 function listenErr(err){
   console.error(err);
   if(err&&err.code==='permission-denied'){unsubs.forEach(f=>f());unsubs=[];
@@ -474,7 +632,10 @@ function listenErr(err){
   }else toast('خطأ في الاتصال بقاعدة البيانات');
 }
 function subscribe(){
-  ready={drivers:false,days:false,settings:false};pending={};
+  ready={drivers:false,days:false,settings:false,roles:false};pending={};ROLES={managers:[],supervisors:[]};
+  unsubs.push(onSnapshot(doc(db,'config','roles'),s=>{
+    const v=s.exists()?s.data():{};const L=x=>(Array.isArray(x)?x:[]).map(e=>String(e).toLowerCase());
+    ROLES={managers:L(v.managers),supervisors:L(v.supervisors)};ready.roles=true;changed()},listenErr));
   let from=monthOf(todayStr());for(let i=0;i<12;i++)from=prevMonth(from);from=addDays(from+'-01',-7);
   unsubs.push(onSnapshot(collection(db,'drivers'),{includeMetadataChanges:true},s=>{
     const o={};s.forEach(x=>o[x.id]={...x.data(),id:x.id});D.drivers=o;pending.drivers=s.metadata.hasPendingWrites;ready.drivers=true;changed()},listenErr));
@@ -490,6 +651,6 @@ function subscribe(){
 onAuthStateChanged(auth,u=>{
   unsubs.forEach(f=>f());unsubs=[];
   if(!u){user=null;D={drivers:{},att:{},orders:{},settings:{}};showLogin();return}
-  user=u;started=false;showLoading();subscribe();
+  user=u;started=false;ROLES={managers:[],supervisors:[]};showLoading();subscribe();
 });
 tick();setInterval(tick,30000);
