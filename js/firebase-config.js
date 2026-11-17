@@ -10,3 +10,6 @@ export const firebaseConfig = {
   appId: "1:642873057778:web:7aa30aaed62585b2728b6b",
   measurementId: "G-XJ3DHJ1ZD6"
 };
+
+// صاحب المنصة: مدير دائماً ولا يمكن إزالة صلاحيته (يجب أن يطابق البريد في firestore.rules)
+export const ownerEmail = "anasgusbi016@gmail.com";
