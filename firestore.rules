@@ -2,17 +2,42 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ضع هنا بريد المشرف (وبريدك أنت) بحروف صغيرة.
-    // أي حساب غير موجود في هذه القائمة لا يستطيع القراءة أو الكتابة.
-    function isStaff() {
+    // صاحب المنصة: مدير دائماً ولا يمكن إزالة صلاحيته
+    function isOwner() {
       return request.auth != null
-        && request.auth.token.email in [
-          'supervisor@example.com',
-          'owner@example.com'
-        ];
+        && request.auth.token.email == 'anasgusbi016@gmail.com';
     }
 
-    match /{document=**} {
+    // بقية المستخدمين وصلاحياتهم محفوظة في المستند config/roles
+    // ويُدارون من داخل المنصة: الإعدادات ← المستخدمون والصلاحيات
+    function inRole(r) {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/config/roles)
+        && request.auth.token.email in get(/databases/$(database)/documents/config/roles).data.get(r, []);
+    }
+    function isManager() { return isOwner() || inRole('managers'); }
+    function isStaff()   { return isManager() || inRole('supervisors'); }
+
+    // قائمة المستخدمين: يقرؤها الجميع، ويعدّلها المدير فقط
+    match /config/roles {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+
+    // مواعيد الفترات ونظام النقاط: يعدّلها المدير فقط
+    match /config/settings {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+
+    // المندوبون: المشرف يضيف ويعدّل، والحذف للمدير فقط
+    match /drivers/{driverId} {
+      allow read, create, update: if isStaff();
+      allow delete: if isManager();
+    }
+
+    // تسجيلات الحضور والطلبيات اليومية
+    match /days/{day} {
       allow read, write: if isStaff();
     }
   }
