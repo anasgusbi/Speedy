@@ -1,0 +1,19 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ضع هنا بريد المشرف (وبريدك أنت) بحروف صغيرة.
+    // أي حساب غير موجود في هذه القائمة لا يستطيع القراءة أو الكتابة.
+    function isStaff() {
+      return request.auth != null
+        && request.auth.token.email in [
+          'supervisor@example.com',
+          'owner@example.com'
+        ];
+    }
+
+    match /{document=**} {
+      allow read, write: if isStaff();
+    }
+  }
+}
